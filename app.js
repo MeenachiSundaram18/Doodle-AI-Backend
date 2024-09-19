@@ -28,6 +28,7 @@ app.use(
 );
 app.options("/upload", cors());
 const upload = multer({ dest: "uploads/" });
+let storedFeatures = null;
 
 // Endpoint to handle document upload
 app.post("/upload", upload.single("file"), async (req, res) => {
@@ -98,15 +99,35 @@ app.post("/upload", upload.single("file"), async (req, res) => {
         // })),
       };
     });
+    storedFeatures = features;
 
-    // Send the extracted data as JSON
-    res.status(200).json({
-      features: features,
-    });
+    // Return the features in the response
+    res.status(200).send(features);
   } catch (err) {
     console.error("Error processing document:", err);
     res.status(500).json({ error: "Error processing document." });
   }
+});
+
+// Endpoint to download features as a text file
+app.get("/download", (req, res) => {
+  if (!storedFeatures) {
+    return res
+      .status(404)
+      .json({ error: "No features available for download." });
+  }
+
+  // Convert features array to text format
+  const featuresText = storedFeatures
+    .map((feature) => JSON.stringify(feature, null, 2))
+    .join("\n\n");
+
+  // Set headers to indicate file download
+  res.setHeader("Content-Disposition", "attachment; filename=features.txt");
+  res.setHeader("Content-Type", "text/plain");
+
+  // Send the text data as a response
+  res.send(featuresText);
 });
 
 // Start the server
