@@ -32,30 +32,35 @@ const upload = multer({ dest: "uploads/" });
 // Endpoint to handle document upload
 app.post("/upload", upload.single("file"), async (req, res) => {
   if (!req.file) {
-    return res.status(400).send("No file uploaded.");
+    return res.status(400).json({ error: "No file uploaded." });
   }
 
   const filePath = req.file.path;
 
   try {
-    // Read the file into memory
-    const document = fs.readFileSync(filePath);
+    const name = `projects/${projectId}/locations/${location}/processors/${processorId}`;
 
-    // Call Google Cloud Document AI
+    // Read the file into memory.
+    const fs = require("fs").promises;
+    const imageFile = await fs.readFile(filePath);
+
+    // Convert the image data to a Buffer and base64 encode it.
+    const encodedImage = Buffer.from(imageFile).toString("base64");
+
     const request = {
-      name: `projects/${projectId}/locations/${location}/processors/${processorId}`,
+      name,
       rawDocument: {
-        content: document.toString("base64"),
-        mimeType: req.file.mimetype,
+        content: encodedImage,
+        mimeType: "application/pdf",
       },
     };
 
     // Recognizes text entities in the PDF document
     const [result] = await client.processDocument(request);
-    const { document: resultDocument } = result;
+    const { document } = result;
 
     // Get all of the document text as one big string
-    const { text } = resultDocument;
+    const { text } = document;
 
     // Extract shards from the text field
     const getText = (textAnchor) => {
@@ -63,25 +68,44 @@ app.post("/upload", upload.single("file"), async (req, res) => {
         return "";
       }
 
-      // First shard in resultDocument doesn't have startIndex property
       const startIndex = textAnchor.textSegments[0].startIndex || 0;
       const endIndex = textAnchor.textSegments[0].endIndex;
 
       return text.substring(startIndex, endIndex);
     };
 
-    // Read the text recognition output from the processor
-    console.log("The resultDocument contains the following paragraphs:");
-    const [page1] = resultDocument.pages;
-    const { paragraphs } = page1;
+    const paragraphsData = document.pages.map((page) => {
+      return page.paragraphs.map((paragraph) => ({
+        text: getText(paragraph.layout.textAnchor),
+      }));
+    });
 
-    for (const paragraph of paragraphs) {
-      const paragraphText = getText(paragraph.layout.textAnchor);
-      console.log(`Paragraph text:\n${paragraphText}`);
-    }
+    // Extract features from the document
+    const features = document.pages.map((page) => {
+      return {
+        pageNumber: page.pageNumber,
+        paragraphs: page.paragraphs.map((paragraph) => ({
+          text: getText(paragraph.layout.textAnchor),
+          layout: paragraph.layout,
+        })),
+        // tables: page.tables.map((table) => ({
+        //   headerRows: table.headerRows,
+        //   bodyRows: table.bodyRows,
+        // })),
+        // images: page.images.map((image) => ({
+        //   content: image.content,
+        //   layout: image.layout,
+        // })),
+      };
+    });
+
+    // Send the extracted data as JSON
+    res.status(200).json({
+      features: features,
+    });
   } catch (err) {
-    console.error("Error processing resultDocument:", err);
-    res.status(500).send("Error processing resultDocument.");
+    console.error("Error processing document:", err);
+    res.status(500).json({ error: "Error processing document." });
   }
 });
 
