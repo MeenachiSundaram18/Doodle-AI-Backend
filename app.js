@@ -23,7 +23,7 @@ app.use(cors());
 
 app.use(
   cors({
-    origin: "http://localhost:5173",
+    origin: "http://localhost:5176",
   })
 );
 app.options("/upload", cors());
@@ -87,16 +87,7 @@ app.post("/upload", upload.single("file"), async (req, res) => {
         pageNumber: page.pageNumber,
         paragraphs: page.paragraphs.map((paragraph) => ({
           text: getText(paragraph.layout.textAnchor),
-          layout: paragraph.layout,
         })),
-        // tables: page.tables.map((table) => ({
-        //   headerRows: table.headerRows,
-        //   bodyRows: table.bodyRows,
-        // })),
-        // images: page.images.map((image) => ({
-        //   content: image.content,
-        //   layout: image.layout,
-        // })),
       };
     });
     storedFeatures = features;
