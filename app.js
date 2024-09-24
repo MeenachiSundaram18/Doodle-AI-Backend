@@ -1,128 +1,103 @@
 const express = require("express");
-const multer = require("multer");
+const bodyParser = require("body-parser");
 const cors = require("cors");
-
-const { DocumentProcessorServiceClient } = require("@google-cloud/documentai");
+const { OpenAI } = require("openai");
+const multer = require("multer");
 const fs = require("fs");
-const path = require("path");
-
-// Google Cloud credentials
-// const projectId = "doodle-ai-435618";
-const projectId = "678973263733";
-const location = "us";
-const processorId = "e4de3e67a875e26b";
-const keyFilePath = path.join(__dirname, "serviceAccount.json");
-
-// Initialize Document AI client
-const client = new DocumentProcessorServiceClient({
-  keyFilename: keyFilePath,
-});
+const upload = multer({ dest: "uploads/" });
 
 const app = express();
 app.use(cors());
+app.use(bodyParser.json());
 
-app.use(
-  cors({
-    origin: "http://localhost:5176",
-  })
-);
-app.options("/upload", cors());
-const upload = multer({ dest: "uploads/" });
-let storedFeatures = null;
+const PORT = process.env.PORT || 5002;
 
-// Endpoint to handle document upload
-app.post("/upload", upload.single("file"), async (req, res) => {
-  if (!req.file) {
-    return res.status(400).json({ error: "No file uploaded." });
-  }
-
-  const filePath = req.file.path;
-
-  try {
-    const name = `projects/${projectId}/locations/${location}/processors/${processorId}`;
-
-    // Read the file into memory.
-    const fs = require("fs").promises;
-    const imageFile = await fs.readFile(filePath);
-
-    // Convert the image data to a Buffer and base64 encode it.
-    const encodedImage = Buffer.from(imageFile).toString("base64");
-
-    const request = {
-      name,
-      rawDocument: {
-        content: encodedImage,
-        mimeType: "application/pdf",
-      },
-    };
-
-    // Recognizes text entities in the PDF document
-    const [result] = await client.processDocument(request);
-    const { document } = result;
-
-    // Get all of the document text as one big string
-    const { text } = document;
-
-    // Extract shards from the text field
-    const getText = (textAnchor) => {
-      if (!textAnchor.textSegments || textAnchor.textSegments.length === 0) {
-        return "";
-      }
-
-      const startIndex = textAnchor.textSegments[0].startIndex || 0;
-      const endIndex = textAnchor.textSegments[0].endIndex;
-
-      return text.substring(startIndex, endIndex);
-    };
-
-    const paragraphsData = document.pages.map((page) => {
-      return page.paragraphs.map((paragraph) => ({
-        text: getText(paragraph.layout.textAnchor),
-      }));
-    });
-
-    // Extract features from the document
-    const features = document.pages.map((page) => {
-      return {
-        pageNumber: page.pageNumber,
-        paragraphs: page.paragraphs.map((paragraph) => ({
-          text: getText(paragraph.layout.textAnchor),
-        })),
-      };
-    });
-    storedFeatures = features;
-
-    // Return the features in the response
-    res.status(200).send(features);
-  } catch (err) {
-    console.error("Error processing document:", err);
-    res.status(500).json({ error: "Error processing document." });
-  }
+// Initialize OpenAI client
+const openai = new OpenAI({
+  apiKey: `key_here`,
 });
 
-// Endpoint to download features as a text file
-app.get("/download", (req, res) => {
-  if (!storedFeatures) {
-    return res
-      .status(404)
-      .json({ error: "No features available for download." });
+// API endpoint to process PDF files
+app.post("/process-pdf", upload.single("file"), async (req, res) => {
+  const filename = req.file.path;
+  const prompt =
+    "Extract the content from the file provided without altering it. Just output its exact content and nothing else.";
+
+  try {
+    // Create the assistant
+
+    const pdfAssistant = await openai.beta.assistants.create({
+      model: "gpt-3.5-turbo", // Updated model name
+      description: "An assistant to extract the contents of PDF files.",
+      tools: [{ type: "file_search" }],
+      name: "PDF assistant",
+    });
+
+    // Create a thread
+    const thread = await openai.beta.threads.create();
+
+    // Upload the PDF file
+    // sundar18final.pdf;
+    const file = await openai.files.create({
+      file: fs.createReadStream("sundar18final.pdf"),
+      // file: fs.createReadStream(filename),x
+      purpose: "assistants",
+    });
+
+    // console.log(file);
+    // const file = await openai.files.create({
+    //   file: fs.createReadStream(filename),
+    //   purpose: "assistants",
+    // });
+
+    // console.log("file", file);
+    // Create a message in the thread with the file attachment
+    await openai.beta.threads.messages.create(thread.id, {
+      // thread_id: thread.id,
+      role: "user",
+      attachments: [
+        {
+          file_id: file.id,
+          tools: [{ type: "file_search" }],
+        },
+      ],
+      content: prompt,
+    });
+
+    // Run the thread
+    const run = await openai.beta.threads.runs.createAndPoll({
+      thread_id: thread.id,
+      assistant_id: pdfAssistant.id,
+    });
+
+    if (run.status !== "completed") {
+      throw new Error("Run failed: " + run.status);
+    }
+
+    // Retrieve messages from the thread
+    const messagesCursor = await openai.beta.threads.messages.list({
+      thread_id: thread.id,
+    });
+
+    const messages = messagesCursor.messages;
+
+    // Output the extracted text
+    const resTxt = messages[0].content[0].text.value;
+
+    // Clean up: remove the uploaded file
+    fs.unlinkSync(filename);
+
+    // Send the extracted content as the response
+    res.json({ extractedContent: resTxt });
+  } catch (error) {
+    console.error("Error processing PDF:", error);
+    res
+      .status(500)
+      .json({ error: "Error processing PDF", details: error.message });
   }
-
-  // Convert features array to text format
-  const featuresText = storedFeatures
-    .map((feature) => JSON.stringify(feature, null, 2))
-    .join("\n\n");
-
-  // Set headers to indicate file download
-  res.setHeader("Content-Disposition", "attachment; filename=features.txt");
-  res.setHeader("Content-Type", "text/plain");
-
-  // Send the text data as a response
-  res.send(featuresText);
 });
 
 // Start the server
-const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`Server is running on port ${PORT}`);
+  console.log(`Server is running on http://localhost:${PORT}`);
 });
