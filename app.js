@@ -4,7 +4,20 @@ const cors = require("cors");
 const { OpenAI } = require("openai");
 const multer = require("multer");
 const fs = require("fs");
-const upload = multer({ dest: "uploads/" });
+const path = require("path");
+
+// const upload = multer({ dest: "uploads/" });
+
+const upload = multer({
+  dest: "uploads/",
+  fileFilter: (req, file, cb) => {
+    // Check for the correct file type (PDF in this case)
+    if (file.mimetype !== "application/pdf") {
+      return cb(new Error("Only PDF files are allowed"), false);
+    }
+    cb(null, true);
+  },
+});
 
 const app = express();
 app.use(cors());
@@ -12,48 +25,33 @@ app.use(bodyParser.json());
 
 const PORT = process.env.PORT || 5002;
 
-// Initialize OpenAI client
-const openai = new OpenAI({
-  apiKey: `key_here`,
-});
-
-// API endpoint to process PDF files
 app.post("/process-pdf", upload.single("file"), async (req, res) => {
-  const filename = req.file.path;
+  const originalExtension = path.extname(req.file.originalname);
+  console.log("originalExtension", originalExtension);
+  const filename = `${req.file.path}${originalExtension}`;
+
+  fs.renameSync(req.file.path, filename);
   const prompt =
     "Extract the content from the file provided without altering it. Just output its exact content and nothing else.";
 
   try {
     // Create the assistant
-
     const pdfAssistant = await openai.beta.assistants.create({
-      model: "gpt-3.5-turbo", // Updated model name
+      model: "gpt-3.5-turbo",
       description: "An assistant to extract the contents of PDF files.",
       tools: [{ type: "file_search" }],
       name: "PDF assistant",
     });
 
-    // Create a thread
     const thread = await openai.beta.threads.create();
 
-    // Upload the PDF file
-    // sundar18final.pdf;
     const file = await openai.files.create({
-      file: fs.createReadStream("sundar18final.pdf"),
-      // file: fs.createReadStream(filename),x
+      file: fs.createReadStream(filename),
       purpose: "assistants",
     });
 
-    // console.log(file);
-    // const file = await openai.files.create({
-    //   file: fs.createReadStream(filename),
-    //   purpose: "assistants",
-    // });
-
-    // console.log("file", file);
     // Create a message in the thread with the file attachment
-    await openai.beta.threads.messages.create(thread.id, {
-      // thread_id: thread.id,
+    const mainResponse = await openai.beta.threads.messages.create(thread.id, {
       role: "user",
       attachments: [
         {
@@ -64,21 +62,27 @@ app.post("/process-pdf", upload.single("file"), async (req, res) => {
       content: prompt,
     });
 
+    console.log("mainResponse", mainResponse);
+
     // Run the thread
-    const run = await openai.beta.threads.runs.createAndPoll({
-      thread_id: thread.id,
+    const run = await openai.beta.threads.runs.createAndPoll(thread.id, {
       assistant_id: pdfAssistant.id,
     });
 
+    console.log("run", run);
     if (run.status !== "completed") {
       throw new Error("Run failed: " + run.status);
     }
 
+    const allMessages = await client.beta.threads.messages.list(thread.id);
+
+    console.log("allMessages", allMessages);
     // Retrieve messages from the thread
     const messagesCursor = await openai.beta.threads.messages.list({
       thread_id: thread.id,
     });
 
+    console.log("messagesCursor", messagesCursor);
     const messages = messagesCursor.messages;
 
     // Output the extracted text
